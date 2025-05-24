@@ -1,5 +1,4 @@
 [tools]
-bun = "latest"
-python = "latest"
+python = "3.13"
+uv = "0.7.6"
 ruff = "latest"
-uv = "latest"
