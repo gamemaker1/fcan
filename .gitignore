@@ -1,0 +1,7 @@
+build/
+dist/
+wheels/
+
+.venv/
+
+__pycache__/

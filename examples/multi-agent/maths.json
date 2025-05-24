@@ -1,0 +1,11 @@
+{
+  "jsonrpc": "2.0",
+  "id": "015ea15f6cd1c56689a373fab3f63ece",
+  "method": "message/send",
+  "params": {
+    "message": {
+      "role": "user",
+      "parts": [{ "kind": "text", "text": "What is the product of 513 and 964? Find the average of the product and 21494 and 89342." }]
+    }
+  }
+}
