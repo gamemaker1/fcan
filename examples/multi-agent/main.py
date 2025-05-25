@@ -83,32 +83,6 @@ def fetch_weather(location):
 weather_skills = [{
     "id": "weather",
     "name": "Weather",
-    "description": "Fetches the weather for a given location",
-    "tags": ["weather"],
-    "examples": [
-        "What's the weather in Pune like tomorrow?.",
-        "Tell me the temperature in Peru right now."
-    ],
-    "inputModes": ["text/plain"],
-    "outputModes": ["application/json"]
-}]
-
-weather_functions = [{
-    "name": "fetch_weather",
-    "description": "Returns the weather forecast for a given location using the wttr.in service for today and the next three days.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "location": { "type": "string" }                     
-        },
-        "required": ["location"]
-    },
-    "function": fetch_weather
-}]
-
-weather_skills = [{
-    "id": "weather",
-    "name": "Weather",
     "description": "Fetches the weather for a given place",
     "tags": ["weather"],
     "examples": [
