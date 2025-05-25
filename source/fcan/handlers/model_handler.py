@@ -34,44 +34,52 @@ class ModelHandler:
         self.prompt = {
             "content": dedent(f"""\
                 You are {name}, an agent designed to complete tasks using your skills and function-calling abilities.
-                Purpose: {description}
+                Purpose: {description}. You are to STRICTLY ADHERE TO YOUR PURPOSE, and DECLINE TASKS THAT DO NOT FALL
+                UNDER YOUR PURPOSE OR SKILL SET.
                 Current UTC: {datetime.now(tz=timezone.utc).isoformat()}
 
-                SKILLS:
-                {json.dumps(skills, indent=2)}  
-                FUNCTIONS:
-                {json.dumps(specs, indent=2)}
+                ABSOLUTE RULE: You MUST return a response in one of the FOUR VALID JSON FORMATS below. DO NOT use
+                plain natural language responses. ANY non-JSON output is an error.
 
                 CRITICAL DIRECTIVES – READ CAREFULLY:
-                1. Your responses MUST be VALID JSON.
-                2. Use ONLY ONE of the three response formats given below.
-                3. BEFORE CALLING A FUNCTION, ASK YOURSELF:
+                1. If a task DOES NOT MATCH YOUR SKILLS, you MUST use the DECLINE TASK response format to decline.
+                2. BEFORE CALLING A FUNCTION, ASK YOURSELF:
                    a. Do I have ALL REQUIRED PARAMETERS? If NO, go to (c).
                    b. Am I ASSUMING ANYTHING not given (e.g., location, preferences, time)? If YES, go to (c).
                    c. Do NOT call the function. First, you MUST use the REQUEST INFO response format to ask the user
                       a specific question. Check if (a) and (b) are satisfied. If YES, then call the function.
-                4. You have NO EXTERNAL KNOWLEDGE OR SENSORS. Only use info from the conversation or available tools.
+                3. You have NO EXTERNAL KNOWLEDGE OR TOOLS. Only use info from the conversation or available functions.
+                4. You MAY call the same or different functions multiple times before returning a final answer.
+                5. You MUST give your final answer based ONLY on the info from the conversation and the function calling outputs.
 
+                If you do not follow the critical directives (numbered 1 to 5), the task will be considered as a
+                complete failure.
+                
                 RESPONSE FORMATS:
 
-                1. FUNCTION CALL:
-                {{ "function": "FUNCTION_NAME", "arguments": {{ "param1": "value1" }} }}
+                a. DECLINE TASK
+                {{ "interrupt": "reject", "message": a message declining the task }}
 
-                2. REQUEST INFO:
-                {{ "interrupt": "input", "message": "Ask user for specific missing info." }}
+                b. FUNCTION CALL:
+                {{ "function": "FUNCTION_NAME", "arguments": dictionary of named function parameters and the corresponding values }}
 
-                3. FINAL ANSWER:
+                c. REQUEST INFO:
+                {{ "interrupt": "input", "message": a message asking the user for more information or clarifications }}
+
+                d. FINAL ANSWER:
                 {{
                   "response": "Optional message to user.",
                   "artifacts": [
-                    [{{ "kind": "text", "content": "Text content" }}, {{ "kind": "data", "content": {{ "key": "value" }} }}],
-                    [{{ "kind": "file", "content": {{ "name": "file.ext", "mime": "type", "bytes": "BASE64" }} }}]
+                    [{{ "kind": "text", "content": the generated text content }}, {{ "kind": "data", "content": dictionary of key value pairs }}],
+                    [{{ "kind": "file", "content": {{ "name": file name, "mime": mime type, "bytes": base64 content bytes }} }}]
                   ]
                 }}
 
-                "artifacts" is OPTIONAL if "response" is given, but ONE OR THE OTHER MUST BE PRESENT. 
-                For "kind": "data", the "content" MUST BE A JSON OBJECT, NOT A STRING.
-                "artifacts" MUST ALWAYS BE AN ARRAY OF ARRAYS.
+                YOUR SKILLS:
+                {json.dumps(skills, indent=2)}
+
+                YOUR FUNCTIONS:
+                {json.dumps(specs, indent=2)}
             """.strip("\n")),
             "role": "system"
         }
@@ -160,17 +168,13 @@ class ModelHandler:
         if task_state not in self.task_handler.working_states():
             return task
 
-        history = self.task_handler.get_history_for_task(task_id)
-        messages = self.task_handler.get_messages_for_task(task_id)
-        response = self.llm.chat(model = self.model, messages = [self.prompt, *history])
-        content = response.get("message", {}).get("content")
-        message = self.task_handler.store_message(task_id, {
-            "role": "assistant",
-            "parts": [{ "kind": "text", "text": content }]
-        })
+        conversation = self.task_handler.get_conversation_for_task(task_id)
+        response = self.llm.chat(model = self.model, messages = [
+            self.prompt, *self.task_handler.get_llm_history_for_task(task_id)
+        ])
 
         try:
-            content = content.strip()
+            content = response.get("message", {}).get("content", "").strip()
             match = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL)
             if match:
                 content = match.group(1)
@@ -178,17 +182,36 @@ class ModelHandler:
         except Exception:
             print("! failed to parse model response")
             print(content)
-            raise Exception("Invalid response.")
+            raise Exception("Unprocessable agent response.")
+        
+        message = self.task_handler.store_message(task_id, {
+            "role": "assistant",
+            "parts": [{ "kind": "data", "data": call }]
+        })
 
         if call.get("interrupt") == "input":
             print("i agent requires more input")
             self.task_handler.update_task(task_id, "input-required")
 
-            task = { "kind": "task", "history": messages[:-1], **task }
-            task["status"]["message"] = {
+            message = self.task_handler.store_message(task_id, {
                 "role": "assistant",
                 "parts": [{ "kind": "text", "text": call["message"] }]
-            }
+            })
+            task["status"]["message"] = message
+            task = { "kind": "task", "history": conversation, **task }
+
+            return task
+
+        if call.get("interrupt") == "reject":
+            print("i agent cannot complete task")
+            self.task_handler.update_task(task_id, "rejected")
+
+            message = self.task_handler.store_message(task_id, {
+                "role": "assistant",
+                "parts": [{ "kind": "text", "text": call["message"] }]
+            })
+            task["status"]["message"] = message
+            task = { "kind": "task", "history": conversation, **task }
 
             return task
 
@@ -196,19 +219,12 @@ class ModelHandler:
             print(f"i calling function {call["function"]}")
             output = self.functions[call["function"]](**call["arguments"])
 
-            # gemma3 specifically does not support the `tool` role. instead, the instructions
-            # must be part of the system and user prompts. see the message linked here:
-            # https://huggingface.co/google/gemma-3-27b-it/discussions/8#67d4654e9c31239e1fc645dc
             self.task_handler.store_message(task_id, {
-                "role": "user",
+                "role": "tool",
                 "parts": [{
                     "kind": "text",
-                    "text": dedent(f"""\
-                        The output of the function call to {call["function"]} is given below the triple dash.
-
-                        ---
-                        {str(output)}
-                    """.strip("\n"))
+                    "text": str(output),
+                    "metadata": call
                 }]
             })
 
@@ -229,10 +245,9 @@ class ModelHandler:
                     "parts": artifact
                 } for artifact in call["artifacts"]]
 
-            task = { "kind": "task", "history": messages[:-1], **task }
+            task = { "kind": "task", "history": conversation, **task }
             return task
 
         print("! llm returned invalid response")
         print(content)
-
-        raise Exception("oops!")
+        raise Exception("Invalid agent response.")

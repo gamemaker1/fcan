@@ -106,6 +106,35 @@ weather_functions = [{
     "function": fetch_weather
 }]
 
+weather_skills = [{
+    "id": "weather",
+    "name": "Weather",
+    "description": "Fetches the weather for a given place",
+    "tags": ["weather"],
+    "examples": [
+        "What's the weather in Pune like tomorrow?.",
+        "Tell me the temperature in Peru right now."
+    ],
+    "inputModes": ["text/plain"],
+    "outputModes": ["application/json"]
+}]
+
+weather_functions = [{
+    "name": "fetch_weather",
+    "description": "Returns the weather forecast for a given place.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "location": {
+                "type": "string",
+                "description": "Must be the name of a place (city, town, etc.)."
+            }
+        },
+        "required": ["location"]
+    },
+    "function": fetch_weather
+}]
+
 agents = [
     A2AServer(
         'Mathematical Agent',
