@@ -13,7 +13,7 @@ def fetch_weather(location):
 skills = [{
     "id": "weather",
     "name": "Weather",
-    "description": "Fetches the weather for a given location",
+    "description": "Fetches the weather for a given place",
     "tags": ["weather"],
     "examples": [
         "What's the weather in Pune like tomorrow?.",
@@ -25,11 +25,14 @@ skills = [{
 
 functions = [{
     "name": "fetch_weather",
-    "description": "Returns the weather forecast for a given location using the wttr.in service for today and the next three days.",
+    "description": "Returns the weather forecast for a given place.",
     "parameters": {
         "type": "object",
         "properties": {
-            "location": { "type": "string" }                     
+            "location": {
+                "type": "string",
+                "description": "Must be the name of a place (city, town, etc.)."
+            }
         },
         "required": ["location"]
     },
