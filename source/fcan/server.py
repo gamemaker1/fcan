@@ -49,7 +49,7 @@ class A2AServer:
         @self.app.route("/", methods=["POST"])
         def rpc_handler():
             rpc = request.json
-            print(f"- handling rpc request ({rpc.get("method", "unknown")})")
+            print(f"- handling rpc ({rpc.get("method", "unknown")})")
 
             try:
                 response = self.model_handler.process_request(rpc)
