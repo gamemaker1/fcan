@@ -5,6 +5,7 @@ fcan/handlers/model_handler.py
 handles all a2a methods using the model via ollama.
 """
 
+import re
 import json
 
 from textwrap import dedent
@@ -32,34 +33,45 @@ class ModelHandler:
         self.llm = Client(host = ollama_url)
         self.prompt = {
             "content": dedent(f"""\
-                You are an agent with the following name and description:
+                You are {name}, an agent designed to complete tasks using your skills and function-calling abilities.
+                Purpose: {description}
+                Current UTC: {datetime.now(tz=timezone.utc).isoformat()}
 
-                {name} - {description}
+                SKILLS:
+                {json.dumps(skills, indent=2)}  
+                FUNCTIONS:
+                {json.dumps(specs, indent=2)}
 
-                The current date and time (UTC) is {datetime.now(tz = timezone.utc).isoformat()}
+                CRITICAL DIRECTIVES – READ CAREFULLY:
+                1. Your responses MUST be VALID JSON.
+                2. Use ONLY ONE of the three response formats given below.
+                3. BEFORE CALLING A FUNCTION, ASK YOURSELF:
+                   a. Do I have ALL REQUIRED PARAMETERS? If NO, go to (c).
+                   b. Am I ASSUMING ANYTHING not given (e.g., location, preferences, time)? If YES, go to (c).
+                   c. Do NOT call the function. First, you MUST use the REQUEST INFO response format to ask the user
+                      a specific question. Check if (a) and (b) are satisfied. If YES, then call the function.
+                4. You have NO EXTERNAL KNOWLEDGE OR SENSORS. Only use info from the conversation or available tools.
 
-                You can call upon the following set of functions. You MUST NOT call a function if a
-                function parameter is required and cannot be determined from the user's message. In
-                such a case, you MUST request the user for more information instead by responding with
-                the following in plain text ONLY ONCE:
+                RESPONSE FORMATS:
 
-                {{"blocking": "input", "message": the message for the user}}
+                1. FUNCTION CALL:
+                {{ "function": "FUNCTION_NAME", "arguments": {{ "param1": "value1" }} }}
 
-                The following is the list of functions:
+                2. REQUEST INFO:
+                {{ "interrupt": "input", "message": "Ask user for specific missing info." }}
 
-                {json.dumps(specs, indent = 4)}
+                3. FINAL ANSWER:
+                {{
+                  "response": "Optional message to user.",
+                  "artifacts": [
+                    [{{ "kind": "text", "content": "Text content" }}, {{ "kind": "data", "content": {{ "key": "value" }} }}],
+                    [{{ "kind": "file", "content": {{ "name": "file.ext", "mime": "type", "bytes": "BASE64" }} }}]
+                  ]
+                }}
 
-                To call any one of these functions, you MUST respond with the following in plain text:
-
-                {{"function": function name, "parameters": dictionary of argument name and its value}}
-
-                IMPORTANT: all argument values must be literals, not expressions. You SHOULD NOT include
-                any other text in the response if you call a function.
-
-                You MUST call only function in one turn. Once you have called all the functions, use the
-                conversation history and present ONLY the relevant portion of the output(s) as requested
-                by the user in a single, user-friendly message. You MUST phrase the message as a response
-                to the user's request.
+                "artifacts" is OPTIONAL if "response" is given, but ONE OR THE OTHER MUST BE PRESENT. 
+                For "kind": "data", the "content" MUST BE A JSON OBJECT, NOT A STRING.
+                "artifacts" MUST ALWAYS BE AN ARRAY OF ARRAYS.
             """.strip("\n")),
             "role": "system"
         }
@@ -152,40 +164,37 @@ class ModelHandler:
         messages = self.task_handler.get_messages_for_task(task_id)
         response = self.llm.chat(model = self.model, messages = [self.prompt, *history])
         content = response.get("message", {}).get("content")
-
-        if content.startswith('{"blocking": "input"'):
-            print("i agent requires more input")
-            try:
-                request = json.loads(content)
-            except Exception:
-                print("! failed to parse input request")
-                print(content)
-
-            self.task_handler.update_task(task_id, "input-required")
-
-            message = self.task_handler.store_message(task_id, {
-                "role": "assistant",
-                "parts": [{ "kind": "text", "text": request["message"] }]
-            })
-            task["status"]["message"] = message
-            task = { "kind": "task", "history": messages[:-1], **task }
-
-            return task
-
         message = self.task_handler.store_message(task_id, {
             "role": "assistant",
             "parts": [{ "kind": "text", "text": content }]
         })
 
-        if content.startswith('{"function":'):
-            try:
-                call = json.loads(content)
-            except Exception:
-                print("! failed to parse function call")
-                print(content)
+        try:
+            content = content.strip()
+            match = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL)
+            if match:
+                content = match.group(1)
+            call = json.loads(content)
+        except Exception:
+            print("! failed to parse model response")
+            print(content)
+            raise Exception("Invalid response.")
 
+        if call.get("interrupt") == "input":
+            print("i agent requires more input")
+            self.task_handler.update_task(task_id, "input-required")
+
+            task = { "kind": "task", "history": messages[:-1], **task }
+            task["status"]["message"] = {
+                "role": "assistant",
+                "parts": [{ "kind": "text", "text": call["message"] }]
+            }
+
+            return task
+
+        if call.get("function") is not None:
             print(f"i calling function {call["function"]}")
-            output = self.functions[call["function"]](**call["parameters"])
+            output = self.functions[call["function"]](**call["arguments"])
 
             # gemma3 specifically does not support the `tool` role. instead, the instructions
             # must be part of the system and user prompts. see the message linked here:
@@ -195,7 +204,7 @@ class ModelHandler:
                 "parts": [{
                     "kind": "text",
                     "text": dedent(f"""\
-                        The output of the call to {call["function"]} is given below the triple dash.
+                        The output of the function call to {call["function"]} is given below the triple dash.
 
                         ---
                         {str(output)}
@@ -205,13 +214,25 @@ class ModelHandler:
 
             return self.process_task(task_id)
 
-        task = self.task_handler.update_task(task_id, "completed")
-        message = self.task_handler.store_message(task_id, {
-            "role": "assistant",
-            "parts": [{ "kind": "text", "text": content }]
-        })
+        if call.get("response") or call.get("artifacts"):
+            task = self.task_handler.update_task(task_id, "completed")
+            if call.get("response") is not None:
+                message = self.task_handler.store_message(task_id, {
+                    "role": "assistant",
+                    "parts": [{ "kind": "text", "text": call["response"] }]
+                })
+                task["status"]["message"] = message
 
-        task["status"]["message"] = message
-        task = { "kind": "task", "history": messages[:-1], **task }
+            if call.get("artifacts") is not None:
+                task["artifacts"] = [{
+                    "artifactId": self.task_handler.generate_id(),
+                    "parts": artifact
+                } for artifact in call["artifacts"]]
 
-        return task
+            task = { "kind": "task", "history": messages[:-1], **task }
+            return task
+
+        print("! llm returned invalid response")
+        print(content)
+
+        raise Exception("oops!")
