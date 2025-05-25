@@ -1,6 +1,5 @@
-import threading
-
 from fcan.server import A2AServer
+from fcan.utils import wait_for_servers
 
 def fetch_weather(location):
     url = f"https://wttr.in/{location}?T"
@@ -45,8 +44,4 @@ server = A2AServer(
 )
 
 server.start()
-try:
-    while True:
-        threading.Event().wait(1)
-except KeyboardInterrupt:
-    print("\n! shutting down all servers")
+wait_for_servers()

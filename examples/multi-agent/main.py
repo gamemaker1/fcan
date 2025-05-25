@@ -1,9 +1,8 @@
-import threading
-
 from operator import mul
 from functools import reduce
 
 from fcan.server import A2AServer
+from fcan.utils import wait_for_servers
 
 def calculate_sum(numbers):
     return sum(numbers)
@@ -123,8 +122,4 @@ agents = [
 for agent in agents:
     agent.start()
 
-try:
-    while True:
-        threading.Event().wait(1)
-except KeyboardInterrupt:
-    print("\n! shutting down all servers")
+wait_for_servers()
