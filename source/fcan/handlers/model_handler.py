@@ -85,14 +85,27 @@ class ModelHandler:
         return specs, calls
 
     def process_request(self, rpc):
+        rpc_version = rpc.get("jsonrpc")
+        request_id = rpc.get("id")
+
+        if rpc_version != "2.0" or not request_id:
+            return { "code": -32600, "message": "Invalid RPC request." }
+
+        def responsify(content):
+            return {
+                "jsonrpc": rpc_version,
+                "id": request_id,
+                "result": content
+            }
+
         method = rpc.get("method")
         params = rpc.get("params")
 
         if not method or not params:
-            return { "code": -32600, "message": "Invalid RPC request." }
+            return responsify({ "code": -32600, "message": "Invalid RPC request." })
 
         if method == "discovery":
-            return self.agent_card
+            return responsify(self.agent_card)
 
         if method == "message/send":
             message = params.get("message")
@@ -103,25 +116,28 @@ class ModelHandler:
             )
 
             task = self.task_handler.get_task(task_id)
+            if not task:
+                return responsify({ "code": -32001, "message": "Task not found." })
+
             if task["status"]["state"] == "submitted":
                 self.task_handler.update_task(task_id, "working")
 
             self.task_handler.store_message(task_id, message)
-            return self.process_task(task_id)
+            return responsify(self.process_task(task_id))
 
         if method == "tasks/get":
             task_id = params.get("id")
             task = self.task_handler.get_task(task_id)
             if not task:
-                return { "code": -32001, "message": "Task not found." }
+                return responsify({ "code": -32001, "message": "Task not found." })
 
             length = params.get("historyLength")
             history = self.task_handler.get_messages_for_task(task_id)
             task["history"] = history[:length]
 
-            return task
+            return responsify(task)
 
-        return { "code": -32601, "message": "Method not found." }
+        return responsify({ "code": -32601, "message": "Method not found." })
 
     def process_task(self, task_id):
         task = self.task_handler.get_task(task_id)
