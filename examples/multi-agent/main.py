@@ -72,7 +72,7 @@ math_functions = [
 ]
 
 def fetch_weather(location):
-    url = f"https://wttr.in/{location}?T"
+    url = f"https://wttr.in/{location}?TF"
 
     import requests
     response = requests.get(url)
